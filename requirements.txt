@@ -1,0 +1,10 @@
+# Dependencias de Prolog
+# SWI-Prolog 8.0+
+#
+# Paquetes Prolog necesarios:
+# - http_server: Servidor HTTP integrado
+# - json: Soporte para JSON
+# - http_client: Cliente HTTP
+
+# Instalación:
+# swipl -c "pack_install('http://github.com/SWI-Prolog/packages-http')."

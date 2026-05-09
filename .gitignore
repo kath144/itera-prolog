@@ -1,0 +1,28 @@
+# Prolog
+*.qlf
+*.pl~
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Compilados
+build/
+dist/
+*.o
