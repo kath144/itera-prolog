@@ -2,17 +2,8 @@ FROM swipl:latest
 
 WORKDIR /app
 
-# Instalar dependencias adicionales si es necesario
-RUN apt-get update && apt-get install -y \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+COPY datos.pl reglas.pl servidor.pl /app/
 
-# Copiar archivos de la aplicación
-COPY src/ src/
-COPY requirements.txt .
+EXPOSE 8080
 
-# Exponer puerto
-EXPOSE 9000
-
-# Comando de inicio
-CMD ["swipl", "-f", "src/server.pl"]
+CMD ["swipl", "-q", "-f", "servidor.pl"]
