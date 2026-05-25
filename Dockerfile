@@ -2,8 +2,8 @@ FROM swipl:latest
 
 WORKDIR /app
 
-COPY datos.pl reglas.pl servidor.pl /app/
+COPY . /app
 
-EXPOSE 8080
+EXPOSE 9000
 
-CMD ["swipl", "-q", "-f", "servidor.pl"]
+CMD ["swipl", "-f", "src/server.pl"]

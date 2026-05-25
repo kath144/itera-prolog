@@ -1,132 +1,129 @@
 % ==========================================
 % ITERA PROLOG - Servidor HTTP
 % ==========================================
-% Servidor HTTP para consultas Prolog
-% Puerto: 9000
 
 :- use_module(library(http/http_server)).
 :- use_module(library(http/http_dispatch)).
-:- use_module(library(http/json)).
 :- use_module(library(http/http_json)).
+:- use_module(library(http/http_error)).
+:- use_module(library(apply)).
 
-% Importar reglas de negocio
-:- include('rules/business_rules.pl').
-
-% ==========================================
-% CONFIGURACIÓN
-% ==========================================
+:- absolute_file_name('src/rules/business_rules.pl', RulesFile),
+    consult(RulesFile).
 
 :- initialization(main).
 
+:- http_handler(root(health), handle_health, [method(get)]).
+:- http_handler(root(query), handle_query, [method(post)]).
+:- http_handler(root(.), handle_not_found, [prefix]).
+
 main :-
-    format('~n🧠 Iniciando servidor Itera Prolog...~n', []),
-    Port = 9000,
+    prolog_port(Port),
+    format('~nIniciando servidor Itera Prolog en el puerto ~w...~n', [Port]),
     http_server(http_dispatch, [port(Port)]),
-    format('✅ Servidor escuchando en http://localhost:~w~n~n', [Port]),
+    format('Servidor escuchando en http://localhost:~w~n', [Port]),
     thread_get_message(_).
 
-% ==========================================
-% RUTAS HTTP
-% ==========================================
-
-% GET /health - Health check
-:- http_handler(root(health), handle_health, []).
-
-handle_health(Request) :-
-    http_read_json_dict(Request, _),
-    reply_json(_{
-        status: ok,
-        service: 'itera-prolog',
-        version: '1.0.0',
-        timestamp: _
-    }).
-
-% POST /query - Consultar Prolog
-:- http_handler(root(query), handle_query, [methods([post])]).
-
-handle_query(Request) :-
-    http_read_json_dict(Request, Dict),
-    (
-        _ = Dict.get(query)
+prolog_port(Port) :-
+    (   getenv('PROLOG_PORT', PortText),
+        PortText \= ''
     ->
-        Query = Dict.get(query),
-        Timeout = Dict.get(timeout, 30000),
-        execute_query(Query, Timeout, Solutions),
-        reply_json(_{
-            success: true,
-            solutions: Solutions,
-            count: (length(Solutions, N) -> N ; 0)
-        })
+        number_string(Port, PortText)
     ;
-        http_status_reply(bad_request, _, _, 
-            'Missing "query" parameter')
+        Port = 9000
     ).
 
-% ==========================================
-% LÓGICA DE CONSULTA
-% ==========================================
+handle_health(_Request) :-
+    reply_json_dict(_{
+        status: "ok",
+        service: "itera-prolog",
+        version: "1.0.0"
+    }).
 
-% Ejecutar una consulta Prolog
-execute_query(QueryStr, Timeout, Solutions) :-
-    atom_string(Query, QueryStr),
-    !,
-    (
-        call_with_depth_limit(
-            findall(
-                _{},
-                call(Query),
-                Solutions
-            ),
-            1000
-        )
+handle_query(Request) :-
+    catch(
+        (   http_read_json_dict(Request, Body),
+            (   get_dict(query, Body, QueryText)
+            ->
+                timeout_value(Body, Timeout),
+                query_solutions(QueryText, Timeout, Solutions),
+                (   Solutions \= []
+                ->
+                    reply_json_dict(_{success: true, solutions: Solutions})
+                ;
+                    reply_json_dict(_{success: false, solutions: []})
+                )
+            ;
+                throw(http_reply(bad_request('Missing "query" parameter')))
+            )
+        ),
+        Error,
+        handle_http_error(Error)
+    ).
+
+timeout_value(Body, Timeout) :-
+    (   get_dict(timeout, Body, TimeoutText)
     ->
-        true
+        (   number(TimeoutText)
+        ->
+            Timeout = TimeoutText
+        ;   atom(TimeoutText)
+        ->
+            atom_number(TimeoutText, Timeout)
+        ;   string(TimeoutText)
+        ->
+            number_string(Timeout, TimeoutText)
+        ;
+            Timeout = 30000
+        )
     ;
+        Timeout = 30000
+    ).
+
+query_solutions(QueryText, _Timeout, Solutions) :-
+    catch(
+        query_solutions_(QueryText, Solutions),
+        _,
         Solutions = []
     ).
 
-execute_query(_, _, []).
-
-% ==========================================
-% UTILIDADES
-% ==========================================
-
-% Convertir resultado a JSON
-result_to_json(Result, JSON) :-
-    JSON = Result.
-
-% ==========================================
-% MANEJO DE ERRORES
-% ==========================================
-
-http_status_reply(Status, Request, Reply, Message) :-
-    format('Error: ~w~n', [Message]),
-    http_status_reply(Status, Request, Reply).
-
-:- http_handler(/, serve_root, [prefix]).
-
-serve_root(Request) :-
-    http_status_reply(not_found, Request, _, 
-        'Endpoint no encontrado. Usa /health o /query').
-
-% ==========================================
-% LOG
-% ==========================================
-
-:- dynamic(log_level/1).
-log_level(info).
-
-log(Level, Format, Args) :-
-    (
-        log_level(CurrentLevel),
-        compare_levels(Level, CurrentLevel)
-    ->
-        format(Format, Args)
-    ;
-        true
+query_solutions_(QueryText, Solutions) :-
+    normalize_query(QueryText, QueryAtom),
+    read_term_from_atom(QueryAtom, Goal, [variable_names(VariableNames)]),
+    findall(
+        SolutionDict,
+        (
+            call(user:Goal),
+            solution_dict(VariableNames, SolutionDict)
+        ),
+        Solutions
     ).
 
-compare_levels(info, _) :- !.
-compare_levels(warn, error) :- !, fail.
-compare_levels(warn, _) :- !.
-compare_levels(error, _) :- !.
+normalize_query(QueryText, QueryAtom) :-
+    (   atom(QueryText)
+    ->
+        QueryAtom = QueryText
+    ;   string(QueryText)
+    ->
+        atom_string(QueryAtom, QueryText)
+    ).
+
+solution_dict(VariableNames, SolutionDict) :-
+    maplist(variable_binding_pair, VariableNames, Pairs),
+    dict_create(SolutionDict, _, Pairs).
+
+variable_binding_pair(Name=Value, Name-JsonValue) :-
+    term_string(Value, JsonValue).
+
+handle_not_found(_Request) :-
+    throw(http_reply(not_found('Endpoint no encontrado. Usa /health o /query'))).
+
+handle_http_error(http_reply(bad_request(Message))) :-
+    reply_json_dict(_{success: false, error: Message}, [status(400)]).
+
+handle_http_error(http_reply(not_found(Message))) :-
+    reply_json_dict(_{success: false, error: Message}, [status(404)]).
+
+handle_http_error(Error) :-
+    print_message(error, Error),
+    reply_json_dict(_{success: false, error: "Internal server error"}, [status(500)]).
