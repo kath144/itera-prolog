@@ -1,129 +1,96 @@
 % ==========================================
-% ITERA PROLOG - Servidor HTTP
+% ITERA PROLOG - Logic Server
 % ==========================================
 
 :- use_module(library(http/http_server)).
 :- use_module(library(http/http_dispatch)).
+:- use_module(library(http/json)).
 :- use_module(library(http/http_json)).
-:- use_module(library(http/http_error)).
-:- use_module(library(apply)).
 
-:- absolute_file_name('src/rules/business_rules.pl', RulesFile),
-    consult(RulesFile).
+% Import business rules (which includes facts.pl)
+:- include('rules/business_rules.pl').
+
+% ==========================================
+% CONFIGURATION
+% ==========================================
 
 :- initialization(main).
 
-:- http_handler(root(health), handle_health, [method(get)]).
-:- http_handler(root(query), handle_query, [method(post)]).
-:- http_handler(root(.), handle_not_found, [prefix]).
-
 main :-
-    prolog_port(Port),
-    format('~nIniciando servidor Itera Prolog en el puerto ~w...~n', [Port]),
+    Port = 9000,
     http_server(http_dispatch, [port(Port)]),
-    format('Servidor escuchando en http://localhost:~w~n', [Port]),
+    format('✅ Itera Logic Server running on port ~w~n', [Port]),
     thread_get_message(_).
 
-prolog_port(Port) :-
-    (   getenv('PROLOG_PORT', PortText),
-        PortText \= ''
-    ->
-        number_string(Port, PortText)
-    ;
-        Port = 9000
-    ).
+% ==========================================
+% HTTP HANDLERS
+% ==========================================
+
+% GET /health
+:- http_handler(root(health), handle_health, []).
 
 handle_health(_Request) :-
-    reply_json_dict(_{
-        status: "ok",
-        service: "itera-prolog",
-        version: "1.0.0"
-    }).
+    reply_json(_{status: ok, service: 'itera-prolog'}).
 
-handle_query(Request) :-
-    catch(
-        (   http_read_json_dict(Request, Body),
-            (   get_dict(query, Body, QueryText)
-            ->
-                timeout_value(Body, Timeout),
-                query_solutions(QueryText, Timeout, Solutions),
-                (   Solutions \= []
-                ->
-                    reply_json_dict(_{success: true, solutions: Solutions})
-                ;
-                    reply_json_dict(_{success: false, solutions: []})
-                )
-            ;
-                throw(http_reply(bad_request('Missing "query" parameter')))
-            )
-        ),
-        Error,
-        handle_http_error(Error)
-    ).
+% POST /roadmap
+% Body: { "student_id": "uuid", "approved_nodes": ["ID1", ...], "skills": ["Skill1", ...], "hours": 20, "pace": "fast_track", "market_gaps": [{"node_id": "ID", "urgency": 5}, ...] }
+:- http_handler(root(roadmap), handle_roadmap, [methods([post])]).
 
-timeout_value(Body, Timeout) :-
-    (   get_dict(timeout, Body, TimeoutText)
-    ->
-        (   number(TimeoutText)
-        ->
-            Timeout = TimeoutText
-        ;   atom(TimeoutText)
-        ->
-            atom_number(TimeoutText, Timeout)
-        ;   string(TimeoutText)
-        ->
-            number_string(Timeout, TimeoutText)
-        ;
-            Timeout = 30000
-        )
+handle_roadmap(Request) :-
+    http_read_json_dict(Request, Dict),
+    (
+        StudentId = Dict.get(student_id),
+        ApprovedNodes = Dict.get(approved_nodes, []),
+        Skills = Dict.get(skills, []),
+        Hours = Dict.get(hours, 20),
+        Pace = Dict.get(pace, 'normal'),
+        MarketGaps = Dict.get(market_gaps, []),
+        
+        % Setup dynamic facts
+        setup_context(StudentId, ApprovedNodes, Skills, Hours, Pace, MarketGaps),
+        
+        generate_custom_roadmap(StudentId, Roadmap),
+        
+        % RF-12: Advanced Recommendation (Prioritized Nodes)
+        prioritized_nodes(StudentId, Recommendations),
+        
+        % RF-16: Projection
+        (project_completion_time(StudentId, EstimatedWeeks) -> Projection = EstimatedWeeks ; Projection = 0),
+        
+        % Cleanup
+        cleanup_context(StudentId),
+        
+        reply_json(_{
+            success: true,
+            student_id: StudentId,
+            roadmap: Roadmap,
+            recommendations: Recommendations,
+            projection: _{
+                estimated_weeks: Projection,
+                pace: Pace,
+                hours_per_week: Hours
+            }
+        })
     ;
-        Timeout = 30000
+        reply_json(_{success: false, error: 'Missing student_id'}, [status(400)])
     ).
 
-query_solutions(QueryText, _Timeout, Solutions) :-
-    catch(
-        query_solutions_(QueryText, Solutions),
-        _,
-        Solutions = []
-    ).
+% ==========================================
+% CONTEXT MANAGEMENT
+% ==========================================
 
-query_solutions_(QueryText, Solutions) :-
-    normalize_query(QueryText, QueryAtom),
-    read_term_from_atom(QueryAtom, Goal, [variable_names(VariableNames)]),
-    findall(
-        SolutionDict,
-        (
-            call(user:Goal),
-            solution_dict(VariableNames, SolutionDict)
-        ),
-        Solutions
-    ).
+setup_context(StudentId, ApprovedNodes, Skills, Hours, Pace, MarketGaps) :-
+    cleanup_context(StudentId),
+    forall(member(Node, ApprovedNodes), assertz(approved_node(StudentId, Node))),
+    forall(member(Skill, Skills), assertz(prior_skill(StudentId, Skill))),
+    assertz(available_hours(StudentId, Hours)),
+    assertz(chosen_pace(StudentId, Pace)),
+    forall(member(Gap, MarketGaps), 
+           (GId = Gap.get(node_id), GUrgency = Gap.get(urgency), assertz(market_gap_ai(StudentId, GId, GUrgency)))).
 
-normalize_query(QueryText, QueryAtom) :-
-    (   atom(QueryText)
-    ->
-        QueryAtom = QueryText
-    ;   string(QueryText)
-    ->
-        atom_string(QueryAtom, QueryText)
-    ).
-
-solution_dict(VariableNames, SolutionDict) :-
-    maplist(variable_binding_pair, VariableNames, Pairs),
-    dict_create(SolutionDict, _, Pairs).
-
-variable_binding_pair(Name=Value, Name-JsonValue) :-
-    term_string(Value, JsonValue).
-
-handle_not_found(_Request) :-
-    throw(http_reply(not_found('Endpoint no encontrado. Usa /health o /query'))).
-
-handle_http_error(http_reply(bad_request(Message))) :-
-    reply_json_dict(_{success: false, error: Message}, [status(400)]).
-
-handle_http_error(http_reply(not_found(Message))) :-
-    reply_json_dict(_{success: false, error: Message}, [status(404)]).
-
-handle_http_error(Error) :-
-    print_message(error, Error),
-    reply_json_dict(_{success: false, error: "Internal server error"}, [status(500)]).
+cleanup_context(StudentId) :-
+    retractall(approved_node(StudentId, _)),
+    retractall(prior_skill(StudentId, _)),
+    retractall(available_hours(StudentId, _)),
+    retractall(chosen_pace(StudentId, _)),
+    retractall(market_gap_ai(StudentId, _, _)).
