@@ -17,7 +17,7 @@
 :- initialization(main).
 
 main :-
-    Port = 9000,
+    Port = 9001,
     http_server(http_dispatch, [port(Port)]),
     format('✅ Itera Logic Server running on port ~w~n', [Port]),
     thread_get_message(_).
