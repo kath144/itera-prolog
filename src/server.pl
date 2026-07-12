@@ -18,7 +18,7 @@
 
 main :-
     Port = 9001,
-    http_server(http_dispatch, [port(Port)]),
+    http_server(http_dispatch, [port(Port), bind_address('127.0.0.1')]),
     format('✅ Itera Logic Server running on port ~w~n', [Port]),
     thread_get_message(_).
 
